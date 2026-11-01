@@ -1,4 +1,7 @@
 # frontend.py
+import re
+import time
+import requests
 import pandas as pd
 import streamlit as st
 from schema import RouteOptimizationInput, StopItem
@@ -6,9 +9,9 @@ from engine import run_doa_route_engine
 from chart_factory import generate_doa_convergence_chart, generate_static_route_map
 from pdf_printer import create_route_pdf_report
 
-st.set_page_config(page_title="Streamline | DOA Smart Route Optimizer", layout="wide")
+st.set_page_config(page_title="Pathfinder | DOA Smart Route Optimizer", layout="wide")
 
-st.title("🧭 Streamline | Dingo Optimization (DOA) Multi-Stop Route Planner")
+st.title("🧭 Pathfinder | Dingo Optimization (DOA) Multi-Stop Route Planner")
 st.caption("Bio-Inspired Metaheuristic Route Sequencing for Last-Mile Delivery Fleets & Multi-Stop Tourist Itineraries")
 
 PRESETS = {
@@ -36,9 +39,46 @@ PRESETS = {
     ]
 }
 
+def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
+    """
+    Converts a place name, Google Maps link, or raw 'Name, Lat, Lon' string
+    into {'name': str, 'lat': float, 'lon': float}.
+    """
+    raw = line.strip()
+    if not raw:
+        return None
+
+    # 1. Check for Google Maps URL or raw coordinates in the line (e.g. @30.0444,31.2357 or 30.0444, 31.2357)
+    coord_match = re.search(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})", raw)
+    if coord_match:
+        lat_val = float(coord_match.group(1))
+        lon_val = float(coord_match.group(2))
+        clean_name = raw.split("http")[0].strip(" ,|-:") or f"Pin ({lat_val:.4f}, {lon_val:.4f})"
+        return {"name": clean_name, "lat": lat_val, "lon": lon_val}
+
+    # 2. Otherwise geocode the place name via Free OpenStreetMap Nominatim API
+    query = raw if default_region.lower() in raw.lower() else f"{raw}, {default_region}"
+    url = "https://nominatim.openstreetmap.org/search"
+    headers = {"User-Agent": "Pathfinder-DOA-RouteEngine/1.0"}
+    try:
+        r = requests.get(url, params={"q": query, "format": "json", "limit": 1}, headers=headers, timeout=8)
+        data = r.json()
+        if data:
+            return {
+                "name": raw,
+                "lat": round(float(data[0]["lat"]), 6),
+                "lon": round(float(data[0]["lon"]), 6)
+            }
+    except Exception:
+        pass
+    return None
+
 with st.sidebar:
     st.header("1. Route & DOA Parameters")
-    preset_choice = st.selectbox("Load Stop Template", list(PRESETS.keys()))
+    preset_choice = st.selectbox("Load Preset Template", list(PRESETS.keys()))
+    if st.button("🔄 Reset Table to Selected Preset"):
+        st.session_state["stops_df"] = pd.DataFrame(PRESETS[preset_choice])
+
     round_trip = st.checkbox("Return to Starting Depot / Hotel (Round Trip)", value=True)
     opt_target = st.selectbox("Optimization Objective", ["Minimum Driving Time (Minutes)", "Minimum Road Distance (km)"])
     agents = st.slider("Number of Dingoes (SearchAgents_no)", 20, 150, 60, 10)
@@ -47,9 +87,76 @@ with st.sidebar:
     fuel_price = st.number_input("Fuel Price per Liter", value=15.0, step=0.5)
     currency = st.text_input("Currency", value="EGP")
 
-st.subheader("📍 Editable Delivery / Tourist Stops Table (Row 1 = Fixed Starting Depot/Hotel)")
+if "stops_df" not in st.session_state:
+    st.session_state["stops_df"] = pd.DataFrame(PRESETS[preset_choice])
+
+# ==================== SMART INPUT HUB ====================
+st.subheader("⚡ Smart Stop Input (No Manual Lat/Lon Needed)")
+tab_search, tab_links, tab_csv = st.tabs([
+    "🔍 1. Type Place Names (Auto-Geocode)",
+    "🔗 2. Paste Google Maps Links",
+    "📂 3. Upload CSV / Excel"
+])
+
+with tab_search:
+    col_a, col_b = st.columns([3, 1])
+    with col_b:
+        region_hint = st.text_input("Default Country / City Filter", value="Cairo, Egypt")
+        replace_mode = st.checkbox("Replace existing table", value=True)
+    with col_a:
+        places_text = st.text_area(
+            "Enter one location or landmark per line (Row 1 = Starting Depot/Hotel):",
+            placeholder="Cairo Festival City Mall\nArkan Plaza Sheikh Zayed\nCity Stars Nasr City\nCairo Tower Zamalek\nMaadi Grand Mall",
+            height=130
+        )
+    if st.button("🌍 Convert Place Names to Coordinates"):
+        lines = [line.strip() for line in places_text.splitlines() if line.strip()]
+        resolved, failed = [], []
+        progress = st.progress(0, text="Geocoding stops via OpenStreetMap...")
+        for idx, line in enumerate(lines):
+            item = resolve_line_to_coord(line, default_region=region_hint)
+            if item:
+                resolved.append(item)
+            else:
+                failed.append(line)
+            progress.progress((idx + 1) / max(1, len(lines)))
+            time.sleep(1.0)  # Respect free Nominatim 1-req/sec policy
+        progress.empty()
+
+        if resolved:
+            new_df = pd.DataFrame(resolved)
+            st.session_state["stops_df"] = new_df if replace_mode else pd.concat([st.session_state["stops_df"], new_df], ignore_index=True)
+            st.success(f"✅ Auto-located {len(resolved)} stops!")
+        if failed:
+            st.warning(f"⚠️ Could not find: {', '.join(failed)}. Try adding a district or city name.")
+
+with tab_links:
+    links_text = st.text_area(
+        "Paste Google Maps URLs or 'Stop Name | URL' (one per line):",
+        placeholder="Warehouse | https://www.google.com/maps/@30.0074,31.4913,15z\nClient A | https://www.google.com/maps?q=30.0661,31.3364",
+        height=110
+    )
+    if st.button("📌 Extract Coordinates from Links"):
+        extracted = [resolve_line_to_coord(l, "") for l in links_text.splitlines() if l.strip()]
+        extracted = [x for x in extracted if x is not None]
+        if extracted:
+            st.session_state["stops_df"] = pd.DataFrame(extracted)
+            st.success(f"✅ Extracted {len(extracted)} pins from links!")
+        else:
+            st.error("No coordinates found in those links. Make sure the link contains @lat,lon or ?q=lat,lon.")
+
+with tab_csv:
+    uploaded = st.file_uploader("Upload CSV with columns: name, lat, lon (or just 'name' to auto-geocode)", type=["csv"])
+    if uploaded is not None:
+        raw_csv = pd.read_csv(uploaded)
+        if {"name", "lat", "lon"}.issubset(set(raw_csv.columns)):
+            st.session_state["stops_df"] = raw_csv[["name", "lat", "lon"]].dropna()
+            st.success(f"✅ Loaded {len(st.session_state['stops_df'])} stops from CSV!")
+
+# ==================== VERIFIED COORDINATE TABLE ====================
+st.subheader("📍 Verified Route Coordinate Table (Row 1 = Starting Depot/Hotel)")
 df_stops = st.data_editor(
-    pd.DataFrame(PRESETS[preset_choice]),
+    st.session_state["stops_df"],
     num_rows="dynamic",
     use_container_width=True
 )
