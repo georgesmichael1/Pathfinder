@@ -16,31 +16,6 @@ st.set_page_config(page_title="Pathfinder | DOA Smart Route Optimizer", layout="
 st.title("🧭 Pathfinder | Multi-Stop Route Planner")
 st.caption("Bio-Inspired Metaheuristic Route Sequencing (500 Dingoes × 200 Iterations)")
 
-PRESETS = {
-    "Cairo Last-Mile Courier (10 Delivery Drops)": [
-        {"name": "Main Warehouse Depot (New Cairo)", "lat": 30.0074, "lon": 31.4913},
-        {"name": "Order #101 - Nasr City Abbas El-Akkad", "lat": 30.0661, "lon": 31.3364},
-        {"name": "Order #102 - Maadi Degla Square", "lat": 29.9602, "lon": 31.2769},
-        {"name": "Order #103 - Heliopolis Korba", "lat": 30.0909, "lon": 31.3231},
-        {"name": "Order #104 - Zamalek 26th July St", "lat": 30.0609, "lon": 31.2197},
-        {"name": "Order #105 - Dokki Mossadak St", "lat": 30.0385, "lon": 31.2122},
-        {"name": "Order #106 - Downtown Talaat Harb", "lat": 30.0476, "lon": 31.2384},
-        {"name": "Order #107 - Mokattam Street 9", "lat": 30.0144, "lon": 31.2859},
-        {"name": "Order #108 - Rehab City Gate 6", "lat": 30.0632, "lon": 31.4946},
-        {"name": "Order #109 - Madinaty South Park", "lat": 30.0886, "lon": 31.6384},
-    ],
-    "Alexandria Tourist & Heritage Day Tour (8 Stops)": [
-        {"name": "Start: Collège Saint-Marc (Shatby)", "lat": 31.2119, "lon": 29.9189},
-        {"name": "Citadel of Qaitbay (Bahary)", "lat": 31.2140, "lon": 29.8856},
-        {"name": "Catacombs of Kom el Shoqafa", "lat": 31.1786, "lon": 29.8929},
-        {"name": "Pompey's Pillar", "lat": 31.1825, "lon": 29.8964},
-        {"name": "Bibliotheca Alexandrina", "lat": 31.2089, "lon": 29.9092},
-        {"name": "Roman Amphitheatre (Kom El-Dikka)", "lat": 31.1956, "lon": 29.9044},
-        {"name": "Stanley Bridge", "lat": 31.2348, "lon": 29.9489},
-        {"name": "Montaza Palace Gardens", "lat": 31.2885, "lon": 30.0159},
-    ]
-}
-
 
 def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
     """
@@ -79,14 +54,21 @@ def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
 
 def update_stops_state(new_df: pd.DataFrame):
     """Safely updates stops_df and resets the data_editor widget key to prevent stale state."""
-    clean_df = new_df[["name", "lat", "lon"]].dropna(subset=["lat", "lon"]).reset_index(drop=True)
+    if new_df.empty:
+        clean_df = pd.DataFrame({"name": pd.Series(dtype="str"), "lat": pd.Series(dtype="float"), "lon": pd.Series(dtype="float")})
+    else:
+        clean_df = new_df[["name", "lat", "lon"]].dropna(subset=["lat", "lon"]).reset_index(drop=True)
     st.session_state["stops_df"] = clean_df
     st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
 
 
-# Initialize Session State
+# Initialize Session State with an EMPTY table
 if "stops_df" not in st.session_state:
-    st.session_state["stops_df"] = pd.DataFrame(PRESETS["Cairo Last-Mile Courier (10 Delivery Drops)"])
+    st.session_state["stops_df"] = pd.DataFrame({
+        "name": pd.Series(dtype="str"),
+        "lat": pd.Series(dtype="float"),
+        "lon": pd.Series(dtype="float")
+    })
 if "editor_version" not in st.session_state:
     st.session_state["editor_version"] = 0
 if "last_map_click" not in st.session_state:
@@ -94,12 +76,6 @@ if "last_map_click" not in st.session_state:
 
 with st.sidebar:
     st.header("1. Route & Vehicle Settings")
-    preset_choice = st.selectbox("Load Preset Template", list(PRESETS.keys()))
-    if st.button("🔄 Load Selected Preset", use_container_width=True):
-        update_stops_state(pd.DataFrame(PRESETS[preset_choice]))
-        st.session_state["last_map_click"] = None
-        st.rerun()
-
     round_trip = st.checkbox("Return to Starting Depot / Hotel (Round Trip)", value=True)
     opt_target = st.selectbox("Optimization Objective", ["Minimum Driving Time (Minutes)", "Minimum Road Distance (km)"])
     fuel_burn = st.number_input("Vehicle Fuel Burn (L / 100km)", value=9.5, step=0.5)
@@ -142,13 +118,13 @@ with tab_map:
                 st.rerun()
     with col_clear:
         if st.button("🗑️ Clear All Stops", use_container_width=True):
-            update_stops_state(pd.DataFrame(columns=["name", "lat", "lon"]))
+            update_stops_state(pd.DataFrame())
             st.session_state["last_map_click"] = None
             st.rerun()
 
     current_df = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-    # Center map on the most recently added pin (or default to Cairo)
+    # Center map on the most recently added pin (or default to Cairo view)
     if not current_df.empty:
         center_lat = float(current_df.iloc[-1]["lat"])
         center_lon = float(current_df.iloc[-1]["lon"])
@@ -242,7 +218,7 @@ with tab_csv:
 # ==================== RUN DOA SOLVER (FIXED 500 DINGOES / 200 ITERATIONS) ====================
 df_stops = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-if st.button(" Run Route Solver", type="primary", use_container_width=True):
+if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="primary", use_container_width=True):
     if len(df_stops) < 2:
         st.error("Please add at least 2 stops (1 Starting Depot + 1 Destination) before running the optimizer.")
     else:
