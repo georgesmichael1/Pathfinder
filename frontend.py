@@ -81,8 +81,6 @@ with st.sidebar:
 
     round_trip = st.checkbox("Return to Starting Depot / Hotel (Round Trip)", value=True)
     opt_target = st.selectbox("Optimization Objective", ["Minimum Driving Time (Minutes)", "Minimum Road Distance (km)"])
-    agents = st.slider("Number of Dingoes (SearchAgents_no)", 20, 150, 60, 10)
-    iterations = st.slider("Max DOA Iterations (Max_iter)", 30, 300, 120, 10)
     fuel_burn = st.number_input("Vehicle Fuel Burn (L / 100km)", value=9.5, step=0.5)
     fuel_price = st.number_input("Fuel Price per Liter", value=15.0, step=0.5)
     currency = st.text_input("Currency", value="EGP")
@@ -170,8 +168,6 @@ if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="p
         stops=stop_items,
         round_trip=round_trip,
         optimize_target=opt_target,
-        search_agents_no=agents,
-        max_iterations=iterations,
         fuel_consumption_l_per_100km=fuel_burn,
         fuel_price_per_liter=fuel_price,
         currency_label=currency
