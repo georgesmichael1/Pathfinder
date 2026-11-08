@@ -92,12 +92,45 @@ if "stops_df" not in st.session_state:
     st.session_state["stops_df"] = pd.DataFrame(PRESETS[preset_choice])
 
 # ==================== SMART INPUT HUB ====================
-st.subheader("⚡ Smart Stop Input (No Manual Lat/Lon Needed)")
-tab_search, tab_links, tab_csv = st.tabs([
-    "🔍 1. Type Place Names (Auto-Geocode)",
-    "🔗 2. Paste Google Maps Links",
-    "📂 3. Upload CSV / Excel"
+st.subheader("⚡ Smart Stop Input")
+tab_map, tab_search, tab_links, tab_csv = st.tabs([
+    "🗺️ 1. Click on Map", 
+    "🔍 2. Type Place Names",
+    "🔗 3. Paste Links",
+    "📂 4. Upload CSV"
 ])
+
+with tab_map:
+    st.markdown("**Click anywhere on the map to drop a pin.** It will automatically be added to your route table below.")
+    
+    # Center map on Cairo or Alexandria based on the first stop in the table
+    start_lat = st.session_state["stops_df"].iloc[0]["lat"] if not st.session_state["stops_df"].empty else 30.0444
+    start_lon = st.session_state["stops_df"].iloc[0]["lon"] if not st.session_state["stops_df"].empty else 31.2357
+    
+    m = folium.Map(location=[start_lat, start_lon], zoom_start=12)
+    
+    # Draw existing pins on the map
+    for idx, row in st.session_state["stops_df"].iterrows():
+        folium.Marker(
+            [row["lat"], row["lon"]], 
+            popup=f"{idx}: {row['name']}",
+            icon=folium.Icon(color="red" if idx == 0 else "blue")
+        ).add_to(m)
+        
+    # Render the interactive map
+    map_data = st_folium(m, height=400, width=700, key="route_map")
+    
+    # If the user clicks the map, grab the coordinates and add it to the table
+    if map_data and map_data.get("last_clicked"):
+        lat = round(map_data["last_clicked"]["lat"], 6)
+        lon = round(map_data["last_clicked"]["lng"], 6)
+        
+        # Check if we already added this exact pin to prevent duplicate re-runs
+        existing = st.session_state["stops_df"]
+        if not ((existing["lat"] == lat) & (existing["lon"] == lon)).any():
+            new_pin = pd.DataFrame([{"name": f"Dropped Pin ({lat}, {lon})", "lat": lat, "lon": lon}])
+            st.session_state["stops_df"] = pd.concat([existing, new_pin], ignore_index=True)
+            st.rerun() # Instantly refreshes the UI with the new stop
 
 with tab_search:
     col_a, col_b = st.columns([3, 1])
