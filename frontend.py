@@ -191,21 +191,38 @@ with tab_search:
             st.warning(f"⚠️ Could not find: {', '.join(failed)}. Try adding a district or city name.")
 
 with tab_links:
-    links_text = st.text_area(
-        "Paste Google Maps URLs or 'Stop Name | URL' (one per line):",
-        placeholder="Warehouse | https://www.google.com/maps/@30.0074,31.4913,15z\nClient A | https://www.google.com/maps?q=30.0661,31.3364",
-        height=110
-    )
-    if st.button("📌 Extract Coordinates from Links"):
+    col_l1, col_l2 = st.columns([3, 1])
+    with col_l2:
+        replace_links_mode = st.checkbox("Replace existing table", value=False, key="replace_links_chk")
+    with col_l1:
+        links_text = st.text_area(
+            "Paste one or more Google Maps URLs or 'Stop Name | URL' (adds to your existing list):",
+            placeholder="Warehouse | https://www.google.com/maps/@30.0074,31.4913,15z",
+            height=110
+        )
+    if st.button("📌 Extract & Add Coordinates from Links"):
         extracted = [resolve_line_to_coord(l, "") for l in links_text.splitlines() if l.strip()]
         extracted = [x for x in extracted if x is not None]
         if extracted:
-            update_stops_state(pd.DataFrame(extracted))
-            st.success(f"✅ Extracted {len(extracted)} pins from links!")
+            new_links_df = pd.DataFrame(extracted)
+            # Automatically number any generic pin names based on the current table length
+            current_len = 0 if replace_links_mode else len(st.session_state["stops_df"])
+            for i in range(len(new_links_df)):
+                if new_links_df.loc[i, "name"].startswith("Pin ("):
+                    stop_num = current_len + i + 1
+                    label = "Start Depot (Pin 1)" if stop_num == 1 else f"Stop #{stop_num} ({new_links_df.loc[i, 'lat']}, {new_links_df.loc[i, 'lon']})"
+                    new_links_df.loc[i, "name"] = label
+
+            combined_df = (
+                new_links_df
+                if replace_links_mode
+                else pd.concat([st.session_state["stops_df"], new_links_df], ignore_index=True)
+            )
+            update_stops_state(combined_df)
+            st.success(f"✅ Added {len(extracted)} stop(s) to your route table!")
             st.rerun()
         else:
-            st.error("No coordinates found in those links. Make sure the link contains @lat,lon or ?q=lat,lon.")
-
+            st.error("No coordinates found in that link. Make sure the link contains @lat,lon or ?q=lat,lon.")
 with tab_csv:
     uploaded = st.file_uploader("Upload CSV with columns: name, lat, lon", type=["csv"])
     if uploaded is not None:
