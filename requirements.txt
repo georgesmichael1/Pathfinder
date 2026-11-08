@@ -5,3 +5,5 @@ pandas
 requests
 matplotlib
 fpdf2
+folium
+streamlit-folium
