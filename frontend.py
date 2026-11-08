@@ -1,8 +1,8 @@
 # frontend.py
-import folium
-from streamlit_folium  import st_folium
 import re
 import time
+import folium
+from streamlit_folium import st_folium
 import requests
 import pandas as pd
 import streamlit as st
@@ -14,6 +14,7 @@ from pdf_printer import create_route_pdf_report
 st.set_page_config(page_title="Pathfinder | DOA Smart Route Optimizer", layout="wide")
 
 st.title("🧭 Pathfinder | Multi-Stop Route Planner")
+st.caption("Bio-Inspired Metaheuristic Route Sequencing (500 Dingoes × 200 Iterations)")
 
 PRESETS = {
     "Cairo Last-Mile Courier (10 Delivery Drops)": [
@@ -39,6 +40,7 @@ PRESETS = {
         {"name": "Montaza Palace Gardens", "lat": 31.2885, "lon": 30.0159},
     ]
 }
+
 
 def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
     """
@@ -74,61 +76,109 @@ def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
         pass
     return None
 
+
+def update_stops_state(new_df: pd.DataFrame):
+    """Safely updates stops_df and resets the data_editor widget key to prevent stale state."""
+    clean_df = new_df[["name", "lat", "lon"]].dropna(subset=["lat", "lon"]).reset_index(drop=True)
+    st.session_state["stops_df"] = clean_df
+    st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
+
+
+# Initialize Session State
+if "stops_df" not in st.session_state:
+    st.session_state["stops_df"] = pd.DataFrame(PRESETS["Cairo Last-Mile Courier (10 Delivery Drops)"])
+if "editor_version" not in st.session_state:
+    st.session_state["editor_version"] = 0
+if "last_map_click" not in st.session_state:
+    st.session_state["last_map_click"] = None
+
 with st.sidebar:
-    st.header("1. Route & DOA Parameters")
+    st.header("1. Route & Vehicle Settings")
     preset_choice = st.selectbox("Load Preset Template", list(PRESETS.keys()))
-    if st.button("🔄 Reset Table to Selected Preset"):
-        st.session_state["stops_df"] = pd.DataFrame(PRESETS[preset_choice])
+    if st.button("🔄 Load Selected Preset", use_container_width=True):
+        update_stops_state(pd.DataFrame(PRESETS[preset_choice]))
+        st.session_state["last_map_click"] = None
+        st.rerun()
 
     round_trip = st.checkbox("Return to Starting Depot / Hotel (Round Trip)", value=True)
     opt_target = st.selectbox("Optimization Objective", ["Minimum Driving Time (Minutes)", "Minimum Road Distance (km)"])
     fuel_burn = st.number_input("Vehicle Fuel Burn (L / 100km)", value=9.5, step=0.5)
     fuel_price = st.number_input("Fuel Price per Liter", value=15.0, step=0.5)
     currency = st.text_input("Currency", value="EGP")
+    st.caption("🐺 Solver Fixed: 500 Dingoes | 200 Iterations")
 
-if "stops_df" not in st.session_state:
-    st.session_state["stops_df"] = pd.DataFrame(PRESETS[preset_choice])
+# ==================== VERIFIED COORDINATE TABLE (SYNCED FIRST) ====================
+st.subheader("📍 Verified Route Coordinate Table (Row 1 = Starting Depot/Hotel)")
+editor_key = f"stops_editor_{st.session_state['editor_version']}"
+edited_df = st.data_editor(
+    st.session_state["stops_df"],
+    num_rows="dynamic",
+    use_container_width=True,
+    key=editor_key
+)
+
+# Immediately persist any manual row deletions or edits before the map renders
+if not edited_df.equals(st.session_state["stops_df"]):
+    st.session_state["stops_df"] = edited_df.dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
 # ==================== SMART INPUT HUB ====================
 st.subheader("⚡ Smart Stop Input")
 tab_map, tab_search, tab_links, tab_csv = st.tabs([
-    "🗺️ 1. Click on Map", 
+    "🗺️ 1. Click on Map",
     "🔍 2. Type Place Names",
     "🔗 3. Paste Links",
     "📂 4. Upload CSV"
 ])
 
 with tab_map:
-    st.markdown("**Click anywhere on the map to drop a pin.** It will automatically be added to your route table below.")
-    
-    # Center map on Cairo or Alexandria based on the first stop in the table
-    start_lat = st.session_state["stops_df"].iloc[0]["lat"] if not st.session_state["stops_df"].empty else 30.0444
-    start_lon = st.session_state["stops_df"].iloc[0]["lon"] if not st.session_state["stops_df"].empty else 31.2357
-    
-    m = folium.Map(location=[start_lat, start_lon], zoom_start=12)
-    
-    # Draw existing pins on the map
-    for idx, row in st.session_state["stops_df"].iterrows():
+    col_info, col_undo, col_clear = st.columns([2.5, 1, 1])
+    with col_info:
+        st.markdown("**Click anywhere on the map to drop a pin.** Pin 1 = Starting Depot (Red).")
+    with col_undo:
+        if st.button("↩️ Undo Last Pin", use_container_width=True):
+            if not st.session_state["stops_df"].empty:
+                update_stops_state(st.session_state["stops_df"].iloc[:-1])
+                st.session_state["last_map_click"] = None
+                st.rerun()
+    with col_clear:
+        if st.button("🗑️ Clear All Stops", use_container_width=True):
+            update_stops_state(pd.DataFrame(columns=["name", "lat", "lon"]))
+            st.session_state["last_map_click"] = None
+            st.rerun()
+
+    current_df = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
+
+    # Center map on the most recently added pin (or default to Cairo)
+    if not current_df.empty:
+        center_lat = float(current_df.iloc[-1]["lat"])
+        center_lon = float(current_df.iloc[-1]["lon"])
+    else:
+        center_lat, center_lon = 30.0444, 31.2357
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+
+    for idx, row in current_df.iterrows():
         folium.Marker(
-            [row["lat"], row["lon"]], 
-            popup=f"{idx}: {row['name']}",
+            [float(row["lat"]), float(row["lon"])],
+            popup=f"{idx + 1}. {row['name']}",
             icon=folium.Icon(color="red" if idx == 0 else "blue")
         ).add_to(m)
-        
-    # Render the interactive map
-    map_data = st_folium(m, height=400, width=700, key="route_map")
-    
-    # If the user clicks the map, grab the coordinates and add it to the table
+
+    map_data = st_folium(m, height=420, use_container_width=True, key="route_map")
+
     if map_data and map_data.get("last_clicked"):
-        lat = round(map_data["last_clicked"]["lat"], 6)
-        lon = round(map_data["last_clicked"]["lng"], 6)
-        
-        # Check if we already added this exact pin to prevent duplicate re-runs
-        existing = st.session_state["stops_df"]
-        if not ((existing["lat"] == lat) & (existing["lon"] == lon)).any():
-            new_pin = pd.DataFrame([{"name": f"Dropped Pin ({lat}, {lon})", "lat": lat, "lon": lon}])
-            st.session_state["stops_df"] = pd.concat([existing, new_pin], ignore_index=True)
-            st.rerun() # Instantly refreshes the UI with the new stop
+        lat = round(float(map_data["last_clicked"]["lat"]), 6)
+        lon = round(float(map_data["last_clicked"]["lng"]), 6)
+        click_sig = f"{lat},{lon}"
+
+        if st.session_state.get("last_map_click") != click_sig:
+            st.session_state["last_map_click"] = click_sig
+            stop_num = len(current_df) + 1
+            pin_name = "Start Depot (Pin 1)" if stop_num == 1 else f"Stop #{stop_num} ({lat}, {lon})"
+            new_pin = pd.DataFrame([{"name": pin_name, "lat": lat, "lon": lon}])
+            updated = pd.concat([current_df, new_pin], ignore_index=True)
+            update_stops_state(updated)
+            st.rerun()
 
 with tab_search:
     col_a, col_b = st.columns([3, 1])
@@ -152,13 +202,15 @@ with tab_search:
             else:
                 failed.append(line)
             progress.progress((idx + 1) / max(1, len(lines)))
-            time.sleep(1.0)  # Respect free Nominatim 1-req/sec policy
+            time.sleep(1.0)
         progress.empty()
 
         if resolved:
             new_df = pd.DataFrame(resolved)
-            st.session_state["stops_df"] = new_df if replace_mode else pd.concat([st.session_state["stops_df"], new_df], ignore_index=True)
+            combined = new_df if replace_mode else pd.concat([st.session_state["stops_df"], new_df], ignore_index=True)
+            update_stops_state(combined)
             st.success(f"✅ Auto-located {len(resolved)} stops!")
+            st.rerun()
         if failed:
             st.warning(f"⚠️ Could not find: {', '.join(failed)}. Try adding a district or city name.")
 
@@ -172,41 +224,44 @@ with tab_links:
         extracted = [resolve_line_to_coord(l, "") for l in links_text.splitlines() if l.strip()]
         extracted = [x for x in extracted if x is not None]
         if extracted:
-            st.session_state["stops_df"] = pd.DataFrame(extracted)
+            update_stops_state(pd.DataFrame(extracted))
             st.success(f"✅ Extracted {len(extracted)} pins from links!")
+            st.rerun()
         else:
             st.error("No coordinates found in those links. Make sure the link contains @lat,lon or ?q=lat,lon.")
 
 with tab_csv:
-    uploaded = st.file_uploader("Upload CSV with columns: name, lat, lon (or just 'name' to auto-geocode)", type=["csv"])
+    uploaded = st.file_uploader("Upload CSV with columns: name, lat, lon", type=["csv"])
     if uploaded is not None:
         raw_csv = pd.read_csv(uploaded)
         if {"name", "lat", "lon"}.issubset(set(raw_csv.columns)):
-            st.session_state["stops_df"] = raw_csv[["name", "lat", "lon"]].dropna()
+            update_stops_state(raw_csv[["name", "lat", "lon"]].dropna())
             st.success(f"✅ Loaded {len(st.session_state['stops_df'])} stops from CSV!")
+            st.rerun()
 
-# ==================== VERIFIED COORDINATE TABLE ====================
-st.subheader("📍 Verified Route Coordinate Table (Row 1 = Starting Depot/Hotel)")
-df_stops = st.data_editor(
-    st.session_state["stops_df"],
-    num_rows="dynamic",
-    use_container_width=True
-)
+# ==================== RUN DOA SOLVER (FIXED 500 DINGOES / 200 ITERATIONS) ====================
+df_stops = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="primary"):
-    stop_items = [
-        StopItem(name=str(r["name"]), lat=float(r["lat"]), lon=float(r["lon"]))
-        for _, r in df_stops.dropna().iterrows()
-    ]
-    payload = RouteOptimizationInput(
-        stops=stop_items,
-        round_trip=round_trip,
-        optimize_target=opt_target,
-        fuel_consumption_l_per_100km=fuel_burn,
-        fuel_price_per_liter=fuel_price,
-        currency_label=currency
-    )
-    st.session_state["doa_res"] = run_doa_route_engine(payload)
+if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="primary", use_container_width=True):
+    if len(df_stops) < 2:
+        st.error("Please add at least 2 stops (1 Starting Depot + 1 Destination) before running the optimizer.")
+    else:
+        stop_items = [
+            StopItem(name=str(r["name"]), lat=float(r["lat"]), lon=float(r["lon"]))
+            for _, r in df_stops.iterrows()
+        ]
+        payload = RouteOptimizationInput(
+            stops=stop_items,
+            round_trip=round_trip,
+            optimize_target=opt_target,
+            search_agents_no=500,
+            max_iterations=200,
+            fuel_consumption_l_per_100km=fuel_burn,
+            fuel_price_per_liter=fuel_price,
+            currency_label=currency
+        )
+        with st.spinner("Running 500 Dingoes × 200 Iterations across real road networks..."):
+            st.session_state["doa_res"] = run_doa_route_engine(payload)
 
 if "doa_res" in st.session_state:
     res = st.session_state["doa_res"]
@@ -217,7 +272,13 @@ if "doa_res" in st.session_state:
     c3.metric("Estimated Fuel Cost", f"{res['opt_fuel_cost']} {res['currency']}", f"-{res['fuel_saved_cost']} {res['currency']} saved")
     c4.metric("Road Matrix Engine", res["routing_source"])
 
-    st.markdown(f"### 👉 [Launch Optimized Multi-Stop Route in Google Maps]({res['google_maps_url']})")
+    if "google_maps_legs" in res and len(res["google_maps_legs"]) > 1:
+        st.subheader("📲 Launch Turn-by-Turn Navigation in Google Maps (Multi-Leg Relay)")
+        leg_cols = st.columns(len(res["google_maps_legs"]))
+        for idx, leg in enumerate(res["google_maps_legs"]):
+            leg_cols[idx].markdown(f"👉 **[{leg['label']}]({leg['url']})**")
+    else:
+        st.markdown(f"### 👉 [Launch Optimized Multi-Stop Route in Google Maps]({res['google_maps_url']})")
 
     col_left, col_right = st.columns([1.2, 1])
     with col_left:
