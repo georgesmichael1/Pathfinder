@@ -242,7 +242,7 @@ with tab_csv:
 # ==================== RUN DOA SOLVER (FIXED 500 DINGOES / 200 ITERATIONS) ====================
 df_stops = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="primary", use_container_width=True):
+if st.button(" Run Route Solver", type="primary", use_container_width=True):
     if len(df_stops) < 2:
         st.error("Please add at least 2 stops (1 Starting Depot + 1 Destination) before running the optimizer.")
     else:
