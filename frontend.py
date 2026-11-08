@@ -1,7 +1,6 @@
 # frontend.py
 import folium
-from streamlit_folium
-import st_folium
+from streamlit_folium  import st_folium
 import re
 import time
 import requests
