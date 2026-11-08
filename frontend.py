@@ -13,8 +13,7 @@ from pdf_printer import create_route_pdf_report
 
 st.set_page_config(page_title="Pathfinder | DOA Smart Route Optimizer", layout="wide")
 
-st.title("🧭 Pathfinder | Dingo Optimization (DOA) Multi-Stop Route Planner")
-st.caption("Bio-Inspired Metaheuristic Route Sequencing for Last-Mile Delivery Fleets & Multi-Stop Tourist Itineraries")
+st.title("🧭 Pathfinder | Multi-Stop Route Planner")
 
 PRESETS = {
     "Cairo Last-Mile Courier (10 Delivery Drops)": [
