@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 from schema import RouteOptimizationInput, StopItem
 from engine import run_doa_route_engine
-from chart_factory import generate_doa_convergence_chart, generate_static_route_map
+from chart_factory import generate_doa_convergence_chart
 from pdf_printer import create_route_pdf_report
 
 st.set_page_config(page_title="Pathfinder | DOA Smart Route Optimizer", layout="wide")
@@ -26,7 +26,6 @@ def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
     if not raw:
         return None
 
-    # 1. Check for Google Maps URL or raw coordinates in the line (e.g. @30.0444,31.2357 or 30.0444, 31.2357)
     coord_match = re.search(r"(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})", raw)
     if coord_match:
         lat_val = float(coord_match.group(1))
@@ -34,7 +33,6 @@ def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
         clean_name = raw.split("http")[0].strip(" ,|-:") or f"Pin ({lat_val:.4f}, {lon_val:.4f})"
         return {"name": clean_name, "lat": lat_val, "lon": lon_val}
 
-    # 2. Otherwise geocode the place name via Free OpenStreetMap Nominatim API
     query = raw if default_region.lower() in raw.lower() else f"{raw}, {default_region}"
     url = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": "Pathfinder-DOA-RouteEngine/1.0"}
@@ -55,7 +53,11 @@ def resolve_line_to_coord(line: str, default_region: str = "Egypt"):
 def update_stops_state(new_df: pd.DataFrame):
     """Safely updates stops_df and resets the data_editor widget key to prevent stale state."""
     if new_df.empty:
-        clean_df = pd.DataFrame({"name": pd.Series(dtype="str"), "lat": pd.Series(dtype="float"), "lon": pd.Series(dtype="float")})
+        clean_df = pd.DataFrame({
+            "name": pd.Series(dtype="str"),
+            "lat": pd.Series(dtype="float"),
+            "lon": pd.Series(dtype="float")
+        })
     else:
         clean_df = new_df[["name", "lat", "lon"]].dropna(subset=["lat", "lon"]).reset_index(drop=True)
     st.session_state["stops_df"] = clean_df
@@ -93,7 +95,6 @@ edited_df = st.data_editor(
     key=editor_key
 )
 
-# Immediately persist any manual row deletions or edits before the map renders
 if not edited_df.equals(st.session_state["stops_df"]):
     st.session_state["stops_df"] = edited_df.dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
@@ -124,7 +125,6 @@ with tab_map:
 
     current_df = st.session_state["stops_df"].dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
-    # Center map on the most recently added pin (or default to Cairo view)
     if not current_df.empty:
         center_lat = float(current_df.iloc[-1]["lat"])
         center_lon = float(current_df.iloc[-1]["lon"])
@@ -160,14 +160,14 @@ with tab_search:
     col_a, col_b = st.columns([3, 1])
     with col_b:
         region_hint = st.text_input("Default Country / City Filter", value="Cairo, Egypt")
-        replace_mode = st.checkbox("Replace existing table", value=True)
+        replace_mode = st.checkbox("Replace existing table", value=False, key="replace_search_chk")
     with col_a:
         places_text = st.text_area(
-            "Enter one location or landmark per line (Row 1 = Starting Depot/Hotel):",
-            placeholder="Cairo Festival City Mall\nArkan Plaza Sheikh Zayed\nCity Stars Nasr City\nCairo Tower Zamalek\nMaadi Grand Mall",
+            "Enter one location or landmark per line (adds to your existing list):",
+            placeholder="Cairo Festival City Mall\nArkan Plaza Sheikh Zayed\nCity Stars Nasr City",
             height=130
         )
-    if st.button("🌍 Convert Place Names to Coordinates"):
+    if st.button("🌍 Convert & Add Place Names"):
         lines = [line.strip() for line in places_text.splitlines() if line.strip()]
         resolved, failed = [], []
         progress = st.progress(0, text="Geocoding stops via OpenStreetMap...")
@@ -185,7 +185,7 @@ with tab_search:
             new_df = pd.DataFrame(resolved)
             combined = new_df if replace_mode else pd.concat([st.session_state["stops_df"], new_df], ignore_index=True)
             update_stops_state(combined)
-            st.success(f"✅ Auto-located {len(resolved)} stops!")
+            st.success(f"✅ Added {len(resolved)} stop(s)!")
             st.rerun()
         if failed:
             st.warning(f"⚠️ Could not find: {', '.join(failed)}. Try adding a district or city name.")
@@ -205,7 +205,6 @@ with tab_links:
         extracted = [x for x in extracted if x is not None]
         if extracted:
             new_links_df = pd.DataFrame(extracted)
-            # Automatically number any generic pin names based on the current table length
             current_len = 0 if replace_links_mode else len(st.session_state["stops_df"])
             for i in range(len(new_links_df)):
                 if new_links_df.loc[i, "name"].startswith("Pin ("):
@@ -223,6 +222,7 @@ with tab_links:
             st.rerun()
         else:
             st.error("No coordinates found in that link. Make sure the link contains @lat,lon or ?q=lat,lon.")
+
 with tab_csv:
     uploaded = st.file_uploader("Upload CSV with columns: name, lat, lon", type=["csv"])
     if uploaded is not None:
@@ -256,45 +256,60 @@ if st.button("🐺 Run Dingo Optimization Algorithm (DOA) Route Solver", type="p
         with st.spinner("Running 500 Dingoes × 200 Iterations across real road networks..."):
             st.session_state["doa_res"] = run_doa_route_engine(payload)
 
+# ==================== FREE TEASER OUTPUT (SAVINGS SUMMARY ONLY) ====================
 if "doa_res" in st.session_state:
     res = st.session_state["doa_res"]
+    naive_liters = (res["naive_dist_km"] / 100.0) * fuel_burn
+    liters_saved = max(0.0, round(naive_liters - res["opt_fuel_liters"], 2))
+
+    st.success("✅ Route Optimization Complete! Review your fleet savings summary below.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Optimized Distance", f"{res['opt_dist_km']} km", f"-{res['dist_saved_km']} km ({res['pct_improvement']}% saved)")
-    c2.metric("Optimized Drive Time", f"{res['opt_dur_min']} min", f"-{res['time_saved_min']} min saved")
-    c3.metric("Estimated Fuel Cost", f"{res['opt_fuel_cost']} {res['currency']}", f"-{res['fuel_saved_cost']} {res['currency']} saved")
-    c4.metric("Road Matrix Engine", res["routing_source"])
+    c1.metric(
+        "Optimized Total Distance",
+        f"{res['opt_dist_km']} km",
+        f"-{res['dist_saved_km']} km ({res['pct_improvement']}% saved)"
+    )
+    c2.metric(
+        "Optimized Drive Time",
+        f"{res['opt_dur_min']} min",
+        f"-{res['time_saved_min']} min saved"
+    )
+    c3.metric(
+        "Fuel / Diesel Saved",
+        f"{liters_saved} Liters",
+        f"Total Burn: {res['opt_fuel_liters']} L"
+    )
+    c4.metric(
+        "Estimated Fuel Cost",
+        f"{res['opt_fuel_cost']} {res['currency']}",
+        f"-{res['fuel_saved_cost']} {res['currency']} saved"
+    )
 
-    if "google_maps_legs" in res and len(res["google_maps_legs"]) > 1:
-        st.subheader("📲 Launch Turn-by-Turn Navigation in Google Maps (Multi-Leg Relay)")
-        leg_cols = st.columns(len(res["google_maps_legs"]))
-        for idx, leg in enumerate(res["google_maps_legs"]):
-            leg_cols[idx].markdown(f"👉 **[{leg['label']}]({leg['url']})**")
-    else:
-        st.markdown(f"### 👉 [Launch Optimized Multi-Stop Route in Google Maps]({res['google_maps_url']})")
-
-    col_left, col_right = st.columns([1.2, 1])
-    with col_left:
-        st.subheader("Turn-by-Turn Optimized Stop Sequence")
-        st.dataframe(pd.DataFrame(res["manifest"]), use_container_width=True)
-    with col_right:
-        conv_img = generate_doa_convergence_chart(res)
-        map_img = generate_static_route_map(res)
-        st.image(map_img, use_container_width=True)
-        st.image(conv_img, use_container_width=True)
+    st.info(
+        "🔒 **Turn-by-Turn Stop Sequence & Clickable Google Maps Navigation Links are locked.** "
+        "Enter your valid Client ID or Ticket Code below to download the full Driver Manifest PDF."
+    )
 
     st.divider()
-    st.subheader("🔒 Download Official Driver Manifest PDF")
+    st.subheader("📥 Unlock Official Driver Manifest & Google Maps Links (PDF)")
     client_key = st.text_input("Enter Client ID or Single-Report Ticket Code")
-    if st.button("Verify License & Generate PDF"):
+    if st.button("Verify License & Generate Official PDF"):
         clients = st.secrets.get("clients", {})
         tickets = st.secrets.get("single_tickets", {})
         k = client_key.strip()
         status = clients.get(k, tickets.get(k, -1))
         if status == 1:
-            pdf_file = create_route_pdf_report(res, conv_img, map_img, client_id=k)
+            conv_img = generate_doa_convergence_chart(res)
+            pdf_file = create_route_pdf_report(res, conv_img, client_id=k)
             with open(pdf_file, "rb") as f:
-                st.download_button("📥 Download DOA Route Manifest PDF", data=f, file_name=pdf_file, mime="application/pdf")
+                st.download_button(
+                    "📥 Download Unlocked Driver Manifest & Navigation PDF",
+                    data=f,
+                    file_name=pdf_file,
+                    mime="application/pdf",
+                    type="primary"
+                )
         elif status == 0:
             st.error("⛔ Access Deactivated (Status = 0).")
         else:
